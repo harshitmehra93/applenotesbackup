@@ -123,6 +123,40 @@ Export a single folder:
 
 macOS may prompt for permission to let Terminal control Notes. Allow it so the script can read your notes.
 
+## Progress Output
+
+Every run prints a planned summary before it starts reading Notes, then shows progress through the backup phases:
+
+```text
+Apple Notes Backup
+
+Output: /Users/harshitmehra/Downloads/AppleNotesMarkdownBackup-YYYYMMDD-HHMMSS
+Account: iCloud
+Folder: All folders
+Title filter: None
+Limit: None
+
+Planned Phases:
+  1. Count matching notes
+  2. Export raw Notes data and attachments
+  3. Convert to Markdown and HTML
+  4. Create folder indexes
+
+macOS may ask for permission to let Terminal control Notes.
+
+Phase 1/4: Counting matching notes...
+Found 876 matching notes.
+
+Phase 2/4: Exporting Apple Notes...
+[42/876] Exporting: Personal Financial plan - short term
+
+Phase 3/4: Converting to Markdown and HTML...
+[42/876] Converting: Personal Financial plan - short term
+
+Phase 4/4: Creating folder indexes...
+Created 117 index.html files.
+```
+
 ## Options
 
 ```text

@@ -26,10 +26,12 @@ from urllib.parse import quote
 
 ATTACHMENT_MARKER = "\ufffc"
 IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+PROGRESS_PREFIX = "PROGRESS\t"
 
 
 APPLESCRIPT = r'''
 property exportedCount : 0
+property countedCount : 0
 
 on run argv
     set rootDir to item 1 of argv
@@ -39,15 +41,8 @@ on run argv
     set maxNotes to item 5 of argv as integer
     set titleFilter to item 6 of argv
 
-    set rawRoot to rootDir & "/raw_html"
-    set textRoot to rootDir & "/text"
-    set manifestPath to rootDir & "/manifest.tsv"
-
-    do shell script "mkdir -p " & quoted form of rawRoot
-    do shell script "mkdir -p " & quoted form of textRoot
-    my writeFile(manifestPath, "raw_rel	text_rel	attachment_rel	title	account	folder	created	modified" & linefeed)
-
     set my exportedCount to 0
+    set my countedCount to 0
 
     tell application "Notes"
         repeat with anAccount in accounts
@@ -57,17 +52,81 @@ on run argv
                 repeat with aFolder in folders of anAccount
                     set parentObject to container of aFolder
                     if class of parentObject is account then
-                        my exportFolder(aFolder, accountName, accountRel, "", "", rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
+                        my countFolder(aFolder, "", includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
                     end if
                 end repeat
             end if
         end repeat
     end tell
 
+    set totalCount to my countedCount
+    log "PROGRESS" & tab & "FOUND" & tab & (totalCount as string)
+
+    set rawRoot to rootDir & "/raw_html"
+    set textRoot to rootDir & "/text"
+    set manifestPath to rootDir & "/manifest.tsv"
+
+    do shell script "mkdir -p " & quoted form of rawRoot
+    do shell script "mkdir -p " & quoted form of textRoot
+    my writeFile(manifestPath, "raw_rel	text_rel	attachment_rel	title	account	folder	created	modified" & linefeed)
+
+    tell application "Notes"
+        repeat with anAccount in accounts
+            set accountName to name of anAccount
+            if accountFilter is "" or accountName is accountFilter then
+                set accountRel to my safeName(accountName)
+                repeat with aFolder in folders of anAccount
+                    set parentObject to container of aFolder
+                    if class of parentObject is account then
+                        my exportFolder(aFolder, accountName, accountRel, "", "", rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter, totalCount)
+                    end if
+                end repeat
+            end if
+        end repeat
+    end tell
+
+    log "PROGRESS" & tab & "DONE" & tab & (my exportedCount as string)
     return my exportedCount as string
 end run
 
-on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
+on countFolder(aFolder, parentDisplayPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
+    if maxNotes is not 0 and (my countedCount) ≥ maxNotes then return
+
+    set folderName to name of aFolder
+    if includeRecentlyDeleted is not "true" and folderName is "Recently Deleted" then return
+
+    if parentDisplayPath is "" then
+        set folderDisplayPath to folderName
+    else
+        set folderDisplayPath to parentDisplayPath & "/" & folderName
+    end if
+
+    set shouldCountFolderNotes to folderFilter is "" or folderName is folderFilter or folderDisplayPath is folderFilter
+    if shouldCountFolderNotes then
+        set folderNotes to {}
+        try
+            tell application "Notes" to set folderNotes to notes of aFolder
+        end try
+        repeat with aNote in folderNotes
+            if maxNotes is not 0 and (my countedCount) ≥ maxNotes then exit repeat
+            tell application "Notes" to set noteTitle to name of aNote
+            if titleFilter is "" or noteTitle is titleFilter then
+                set my countedCount to (my countedCount) + 1
+            end if
+        end repeat
+    end if
+
+    set childFolders to {}
+    try
+        tell application "Notes" to set childFolders to folders of aFolder
+    end try
+    repeat with childFolder in childFolders
+        if maxNotes is not 0 and (my countedCount) ≥ maxNotes then exit repeat
+        my countFolder(childFolder, folderDisplayPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
+    end repeat
+end countFolder
+
+on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter, totalCount)
     if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then return
 
     set folderName to name of aFolder
@@ -124,6 +183,7 @@ on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, 
 
                 set manifestLine to my tsv(rawRel) & tab & my tsv(textRel) & tab & my tsv(attachmentRel) & tab & my tsv(noteTitle) & tab & my tsv(accountName) & tab & my tsv(folderDisplayPath) & tab & my tsv(createdValue) & tab & my tsv(modifiedValue) & linefeed
                 my appendFile(manifestPath, manifestLine)
+                log "PROGRESS" & tab & "EXPORT" & tab & (my exportedCount as string) & tab & (totalCount as string) & tab & my progressText(noteTitle)
             end if
         end repeat
     end if
@@ -134,7 +194,7 @@ on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, 
     end try
     repeat with childFolder in childFolders
         if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then exit repeat
-        my exportFolder(childFolder, accountName, accountRel, folderRel, folderDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
+        my exportFolder(childFolder, accountName, accountRel, folderRel, folderDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter, totalCount)
     end repeat
 end exportFolder
 
@@ -233,6 +293,12 @@ on tsv(inputText)
     set cleaned to my replaceText(linefeed, " ", cleaned)
     return cleaned
 end tsv
+
+on progressText(inputText)
+    set cleaned to my tsv(inputText)
+    if length of cleaned > 120 then set cleaned to text 1 through 120 of cleaned
+    return cleaned
+end progressText
 
 on replaceText(findText, replaceText, sourceText)
     set AppleScript's text item delimiters to findText
@@ -449,14 +515,40 @@ def yaml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def convert_manifest(output_dir: Path) -> int:
+def progress_value(value: str, fallback: str) -> str:
+    return value if value else fallback
+
+
+def print_planned_summary(args: argparse.Namespace, output_dir: Path) -> None:
+    print("Apple Notes Backup")
+    print()
+    print(f"Output: {output_dir}")
+    print(f"Account: {progress_value(args.account, 'All accounts')}")
+    print(f"Folder: {progress_value(args.folder, 'All folders')}")
+    print(f"Title filter: {progress_value(args.title, 'None')}")
+    print(f"Limit: {args.limit if args.limit else 'None'}")
+    print()
+    print("Planned Phases:")
+    print("  1. Count matching notes")
+    print("  2. Export raw Notes data and attachments")
+    print("  3. Convert to Markdown and HTML")
+    print("  4. Create folder indexes")
+    print()
+    print("macOS may ask for permission to let Terminal control Notes.")
+    print()
+
+
+def convert_manifest(output_dir: Path, progress_total: int | None = None) -> int:
     manifest = output_dir / "manifest.tsv"
     md_root = output_dir / "markdown"
     count = 0
+    total_label = str(progress_total) if progress_total is not None else "?"
 
     with manifest.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         for row in reader:
+            count += 1
+            print(f"[{count}/{total_label}] Converting: {row['title']}", flush=True)
             raw_path = output_dir / row["raw_rel"]
             text_path = output_dir / row["text_rel"]
             raw_rel = Path(row["raw_rel"])
@@ -496,7 +588,6 @@ def convert_manifest(output_dir: Path) -> int:
             ]
             md_path.write_text("\n".join(frontmatter) + body, encoding="utf-8")
             html_path.write_text(processed_html, encoding="utf-8")
-            count += 1
 
     return count
 
@@ -578,8 +669,13 @@ def run_export(
         handle.write(APPLESCRIPT)
         script_path = Path(handle.name)
 
+    print("Phase 1/4: Counting matching notes...", flush=True)
+    exported_count: int | None = None
+    total_count: int | None = None
+    output_lines: list[str] = []
+
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [
                 "osascript",
                 str(script_path),
@@ -591,17 +687,49 @@ def run_export(
                 title,
             ],
             text=True,
-            capture_output=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.rstrip()
+            output_lines.append(line)
+            if not line.startswith(PROGRESS_PREFIX):
+                continue
+
+            parts = line.split("\t")
+            event = parts[1] if len(parts) > 1 else ""
+            if event == "FOUND" and len(parts) >= 3:
+                total_count = int(parts[2])
+                print(f"Found {total_count} matching notes.", flush=True)
+                print()
+                print("Phase 2/4: Exporting Apple Notes...", flush=True)
+                if total_count == 0:
+                    print("No matching notes to export.", flush=True)
+            elif event == "EXPORT" and len(parts) >= 5:
+                current = parts[2]
+                total = parts[3]
+                note_title = parts[4]
+                print(f"[{current}/{total}] Exporting: {note_title}", flush=True)
+            elif event == "DONE" and len(parts) >= 3:
+                exported_count = int(parts[2])
+
+        return_code = process.wait()
     finally:
         script_path.unlink(missing_ok=True)
 
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "osascript failed")
+    if return_code != 0:
+        details = "\n".join(line for line in output_lines if line.strip())
+        raise RuntimeError(details or "osascript failed")
 
-    stdout = result.stdout.strip()
-    return int(stdout.splitlines()[-1]) if stdout else 0
+    if exported_count is not None:
+        return exported_count
+
+    for line in reversed(output_lines):
+        if line.strip().isdigit():
+            return int(line.strip())
+
+    raise RuntimeError("osascript finished without an exported note count")
 
 
 def default_output_dir() -> Path:
@@ -655,12 +783,19 @@ def main() -> int:
     args = parse_args()
     output_dir = args.output.expanduser().resolve()
 
-    print(f"Exporting Apple Notes to: {output_dir}")
-    print("macOS may ask for permission to let Terminal control Notes.")
+    print_planned_summary(args, output_dir)
 
     exported = run_export(output_dir, args.account, args.folder, args.title, args.limit, args.include_recently_deleted)
-    converted = convert_manifest(output_dir)
+    print()
+    print("Phase 3/4: Converting to Markdown and HTML...", flush=True)
+    if exported == 0:
+        print("No notes to convert.", flush=True)
+    converted = convert_manifest(output_dir, exported)
+    print()
+    print("Phase 4/4: Creating folder indexes...", flush=True)
     indexed = generate_indexes(output_dir)
+    print(f"Created {indexed} index.html files.", flush=True)
+    print()
 
     print(f"Exported {exported} notes.")
     print(f"Created {converted} Markdown files in: {output_dir / 'markdown'}")
