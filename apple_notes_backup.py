@@ -17,11 +17,15 @@ import datetime as dt
 import html
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import quote
+
+ATTACHMENT_MARKER = "\ufffc"
+IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 
 
 APPLESCRIPT = r'''
@@ -288,28 +292,157 @@ def extract_image_links(html_text: str, md_path: Path) -> list[str]:
     return links
 
 
-def text_to_markdown(text: str, html_text: str, md_path: Path) -> str:
-    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    image_links = extract_image_links(html_text, md_path)
-    sections = [text] if text else []
-    if image_links:
-        sections.extend(["## Attachments", "\n".join(image_links)])
-    return "\n\n".join(sections).strip() + "\n"
+def is_image_file(name: str) -> bool:
+    return Path(name).suffix.lower() in IMAGE_EXTENSIONS
 
 
-def exported_attachment_links(md_path: Path, attachment_rel: str) -> list[str]:
+def parse_attachment_entries(md_path: Path, attachment_rel: str) -> list[dict[str, str]]:
     attachment_dir = md_path.parent / attachment_rel
     if not attachment_dir.exists():
         return []
 
-    links = []
+    entries: dict[int, dict[str, str]] = {}
+    unavailable_path = attachment_dir / "unavailable-attachments.txt"
+
     for attachment in sorted(attachment_dir.iterdir(), key=lambda p: p.name.lower()):
-        if not attachment.is_file():
+        if not attachment.is_file() or attachment.name in {"index.html", "unavailable-attachments.txt"}:
             continue
+        match = re.match(r"^(\d+)-", attachment.name)
+        if not match:
+            continue
+        index = int(match.group(1))
         href = quote(f"{attachment_rel}/{attachment.name}")
-        links.append(f"- [{attachment.name}]({href})")
-    return links
+        entries[index] = {"name": attachment.name, "href": href, "available": "true"}
+
+    if unavailable_path.exists():
+        for line in unavailable_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            match = re.match(r"^(\d+) - (.*?) - (.*)$", line)
+            if not match:
+                continue
+            index = int(match.group(1))
+            entries.setdefault(
+                index,
+                {
+                    "name": match.group(2) or f"attachment-{index}",
+                    "href": quote(f"{attachment_rel}/unavailable-attachments.txt"),
+                    "available": "false",
+                    "error": match.group(3),
+                },
+            )
+
+    return [entries[index] for index in sorted(entries)]
+
+
+def copy_attachments_for_html(md_path: Path, html_path: Path, attachment_rel: str) -> None:
+    source = md_path.parent / attachment_rel
+    if not source.exists():
+        return
+
+    destination = html_path.parent / attachment_rel
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+def markdown_for_attachment(entry: dict[str, str]) -> str:
+    name = entry["name"]
+    href = entry["href"]
+    if entry.get("available") == "false":
+        return f"[{name} unavailable]({href})"
+    if is_image_file(name):
+        return f"![{name}]({href})"
+    return f"[{name}]({href})"
+
+
+def html_for_attachment(entry: dict[str, str]) -> str:
+    name = html.escape(entry["name"])
+    href = html.escape(entry["href"], quote=True)
+    if entry.get("available") == "false":
+        return f'<a class="missing-attachment" href="{href}">{name} unavailable</a>'
+    if is_image_file(entry["name"]):
+        return f'<img class="attachment-image" src="{href}" alt="{name}">'
+    return f'<a class="file-attachment" href="{href}">{name}</a>'
+
+
+def replace_attachment_markers_markdown(text: str, entries: list[dict[str, str]]) -> tuple[str, list[dict[str, str]]]:
+    remaining = iter(entries)
+    used = 0
+
+    def replace_marker(_: re.Match[str]) -> str:
+        nonlocal used
+        try:
+            entry = next(remaining)
+        except StopIteration:
+            return "[missing attachment]"
+        used += 1
+        return markdown_for_attachment(entry)
+
+    replaced = re.sub(ATTACHMENT_MARKER, replace_marker, text)
+    return replaced, entries[used:]
+
+
+def text_to_markdown(text: str, html_text: str, md_path: Path, attachment_entries: list[dict[str, str]]) -> tuple[str, list[dict[str, str]]]:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    text, remaining_entries = replace_attachment_markers_markdown(text, attachment_entries)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    image_links = [] if attachment_entries else extract_image_links(html_text, md_path)
+    sections = [text] if text else []
+    if image_links:
+        sections.extend(["## Attachments", "\n".join(image_links)])
+    return "\n\n".join(sections).strip() + "\n", remaining_entries
+
+
+def attachment_links_markdown(entries: list[dict[str, str]]) -> list[str]:
+    return [f"- {markdown_for_attachment(entry)}" for entry in entries]
+
+
+def text_to_html(text: str, attachment_entries: list[dict[str, str]], title: str) -> tuple[str, list[dict[str, str]]]:
+    remaining = iter(attachment_entries)
+    used = 0
+
+    def render_line(line: str) -> str:
+        nonlocal used
+        pieces = []
+        for part in re.split(f"({ATTACHMENT_MARKER})", line):
+            if part == "":
+                continue
+            if part == ATTACHMENT_MARKER:
+                try:
+                    entry = next(remaining)
+                except StopIteration:
+                    pieces.append('<span class="missing-attachment">missing attachment</span>')
+                else:
+                    used += 1
+                    pieces.append(html_for_attachment(entry))
+            else:
+                pieces.append(html.escape(part))
+        return "".join(pieces)
+
+    rows = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line.strip():
+            rows.append(f"<div>{render_line(line)}</div>")
+        else:
+            rows.append("<div><br></div>")
+
+    body = "\n".join(rows)
+    page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; line-height: 1.5; }}
+    .attachment-image {{ display: block; max-width: 100%; height: auto; margin: 0.75rem 0; }}
+    .file-attachment, .missing-attachment {{ display: inline-block; margin: 0.25rem 0; }}
+    .missing-attachment {{ color: #8a5a00; }}
+  </style>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+    return page, attachment_entries[used:]
 
 
 def yaml_string(value: str) -> str:
@@ -333,12 +466,23 @@ def convert_manifest(output_dir: Path) -> int:
 
             md_name = raw_rel.with_suffix(".md").name
             md_path = md_dir / md_name
+            html_dir = output_dir / "html" / note_dir
+            html_dir.mkdir(parents=True, exist_ok=True)
+            html_path = html_dir / raw_rel.name
             html_text = raw_path.read_text(encoding="utf-8", errors="replace")
             plain_text = text_path.read_text(encoding="utf-8", errors="replace")
-            body = text_to_markdown(plain_text, html_text, md_path)
-            file_attachment_links = exported_attachment_links(md_path, row["attachment_rel"])
+            attachment_entries = parse_attachment_entries(md_path, row["attachment_rel"])
+            copy_attachments_for_html(md_path, html_path, row["attachment_rel"])
+            body, remaining_markdown_entries = text_to_markdown(plain_text, html_text, md_path, attachment_entries)
+            processed_html, remaining_html_entries = text_to_html(plain_text, attachment_entries, row["title"])
+            file_attachment_links = attachment_links_markdown(remaining_markdown_entries)
             if file_attachment_links:
                 body = body.rstrip() + "\n\n## Files\n\n" + "\n".join(file_attachment_links) + "\n"
+            if remaining_html_entries:
+                links = "\n".join(
+                    f"<li>{html_for_attachment(entry)}</li>" for entry in remaining_html_entries
+                )
+                processed_html = processed_html.replace("</body>", f"<h2>Files</h2>\n<ul>\n{links}\n</ul>\n</body>")
 
             frontmatter = [
                 "---",
@@ -351,6 +495,7 @@ def convert_manifest(output_dir: Path) -> int:
                 "",
             ]
             md_path.write_text("\n".join(frontmatter) + body, encoding="utf-8")
+            html_path.write_text(processed_html, encoding="utf-8")
             count += 1
 
     return count
@@ -465,7 +610,7 @@ def default_output_dir() -> Path:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Back up local macOS Apple Notes to Markdown.")
+    parser = argparse.ArgumentParser(description="Back up local macOS Apple Notes to Markdown and HTML.")
     parser.add_argument(
         "-o",
         "--output",
@@ -519,6 +664,7 @@ def main() -> int:
 
     print(f"Exported {exported} notes.")
     print(f"Created {converted} Markdown files in: {output_dir / 'markdown'}")
+    print(f"Created {converted} processed HTML files in: {output_dir / 'html'}")
     print(f"Created {indexed} index.html files for browsing the backup.")
     print(f"Raw HTML is kept in: {output_dir / 'raw_html'}")
     return 0

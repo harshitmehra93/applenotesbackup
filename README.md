@@ -4,7 +4,7 @@ One-way Apple Notes backup for macOS. It reads notes from the local Notes app an
 
 The tool does not write back to Apple Notes, install background jobs, call network services, or delete old backups.
 It uses only the Python standard library.
-It also copies Apple Notes file attachments, including PDFs and other documents, into each note's Markdown folder.
+It also copies Apple Notes file attachments, including PDFs and other documents, into each note's Markdown and browsable HTML folders.
 
 ## Output Structure
 
@@ -25,6 +25,16 @@ AppleNotesMarkdownBackup-YYYYMMDD-HHMMSS/
           index.html
         index.html
       index.html
+  html/
+    iCloud/
+      orcl/
+        postgres/
+          PITR/
+            My Note-1.html
+            attachments/
+              My Note-1/
+                1-Document.pdf
+            index.html
   raw_html/
     iCloud/
       orcl/
@@ -42,7 +52,9 @@ AppleNotesMarkdownBackup-YYYYMMDD-HHMMSS/
 ```
 
 Each Markdown file includes front matter with the original title, account, folder, created date, and modified date.
-If the note has file attachments, the Markdown file includes a `## Files` section linking to the copied files.
+Markdown and processed HTML place copied attachment links at Apple Notes' attachment markers when macOS exposes those markers.
+Any extra attachment files that cannot be matched to a marker are listed in a `Files` section.
+The `raw_html` folder keeps Apple's original HTML export for recovery/debugging.
 Every backup folder also gets an `index.html` file with links to its child folders and files.
 
 ## Install
