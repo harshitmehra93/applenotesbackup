@@ -36,7 +36,19 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
+Or use Make:
+
+```bash
+make setup
+```
+
 ## Run
+
+Back up all Notes accounts with Make:
+
+```bash
+make backup
+```
 
 Back up all iCloud notes:
 
@@ -50,10 +62,22 @@ Back up all Notes accounts:
 .venv/bin/python apple_notes_backup.py
 ```
 
+Back up only iCloud with Make:
+
+```bash
+make backup-icloud
+```
+
 Test with a few notes first:
 
 ```bash
 .venv/bin/python apple_notes_backup.py --account iCloud --limit 5
+```
+
+Or:
+
+```bash
+make test
 ```
 
 Write to a specific folder:
