@@ -1,8 +1,9 @@
 # Apple Notes Backup
 
-One-way Apple Notes backup for macOS. It reads notes from the local Notes app and writes Markdown files while preserving account and folder structure.
+One-way Apple Notes backup for macOS. It reads notes from the local Notes app and writes Markdown files while preserving account and nested folder structure.
 
 The tool does not write back to Apple Notes, install background jobs, call network services, or delete old backups.
+It uses only the Python standard library.
 
 ## Output Structure
 
@@ -12,20 +13,32 @@ Backups are written to a timestamped folder in `~/Downloads` by default:
 AppleNotesMarkdownBackup-YYYYMMDD-HHMMSS/
   markdown/
     iCloud/
-      Journal/
-        My Note-1.md
+      orcl/
+        postgres/
+          PITR/
+            My Note-1.md
+            index.html
+          index.html
+        index.html
+      index.html
   raw_html/
     iCloud/
-      Journal/
-        My Note-1.html
+      orcl/
+        postgres/
+          PITR/
+            My Note-1.html
   text/
     iCloud/
-      Journal/
-        My Note-1.txt
+      orcl/
+        postgres/
+          PITR/
+            My Note-1.txt
   manifest.tsv
+  index.html
 ```
 
 Each Markdown file includes front matter with the original title, account, folder, created date, and modified date.
+Every backup folder also gets an `index.html` file with links to its child folders and files.
 
 ## Install
 
@@ -33,7 +46,6 @@ From this project directory:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
 ```
 
 Or use Make:

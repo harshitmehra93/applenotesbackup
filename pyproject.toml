@@ -8,10 +8,7 @@ version = "0.1.0"
 description = "One-way Apple Notes backup to Markdown on macOS"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-  "beautifulsoup4>=4.13,<5",
-  "markdownify>=1.1,<2",
-]
+dependencies = []
 
 [project.scripts]
 apple-notes-backup = "apple_notes_backup:main"

@@ -14,15 +14,19 @@ import argparse
 import base64
 import csv
 import datetime as dt
+import html
 import json
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 
 APPLESCRIPT = r'''
+property exportedCount : 0
+
 on run argv
     set rootDir to item 1 of argv
     set accountFilter to item 2 of argv
@@ -38,54 +42,91 @@ on run argv
     do shell script "mkdir -p " & quoted form of textRoot
     my writeFile(manifestPath, "raw_rel	text_rel	title	account	folder	created	modified" & linefeed)
 
-    set exportedCount to 0
+    set my exportedCount to 0
 
     tell application "Notes"
         repeat with anAccount in accounts
             set accountName to name of anAccount
             if accountFilter is "" or accountName is accountFilter then
+                set accountRel to my safeName(accountName)
                 repeat with aFolder in folders of anAccount
-                    set folderName to name of aFolder
-                    if (folderFilter is "" or folderName is folderFilter) and (includeRecentlyDeleted is "true" or folderName is not "Recently Deleted") then
-                        set safeAccountDir to my safeName(accountName)
-                        set safeFolderDir to my safeName(folderName)
-                        set noteDirRel to safeAccountDir & "/" & safeFolderDir
-                        set rawDir to rawRoot & "/" & noteDirRel
-                        set textDir to textRoot & "/" & noteDirRel
-                        do shell script "mkdir -p " & quoted form of rawDir
-                        do shell script "mkdir -p " & quoted form of textDir
-
-                        set folderIndex to 0
-                        repeat with aNote in notes of aFolder
-                            if maxNotes is not 0 and exportedCount ≥ maxNotes then exit repeat
-                            set folderIndex to folderIndex + 1
-                            set exportedCount to exportedCount + 1
-
-                            set noteTitle to name of aNote
-                            set safeTitle to my safeName(noteTitle)
-                            set baseName to safeTitle & "-" & (folderIndex as string)
-
-                            set rawRel to "raw_html/" & noteDirRel & "/" & baseName & ".html"
-                            set textRel to "text/" & noteDirRel & "/" & baseName & ".txt"
-                            set rawPath to rootDir & "/" & rawRel
-                            set textPath to rootDir & "/" & textRel
-
-                            my writeFile(rawPath, body of aNote)
-                            my writeFile(textPath, plaintext of aNote)
-
-                            set createdValue to (creation date of aNote) as string
-                            set modifiedValue to (modification date of aNote) as string
-                            set manifestLine to my tsv(rawRel) & tab & my tsv(textRel) & tab & my tsv(noteTitle) & tab & my tsv(accountName) & tab & my tsv(folderName) & tab & my tsv(createdValue) & tab & my tsv(modifiedValue) & linefeed
-                            my appendFile(manifestPath, manifestLine)
-                        end repeat
+                    set parentObject to container of aFolder
+                    if class of parentObject is account then
+                        my exportFolder(aFolder, accountName, accountRel, "", "", rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes)
                     end if
                 end repeat
             end if
         end repeat
     end tell
 
-    return exportedCount as string
+    return my exportedCount as string
 end run
+
+on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes)
+    if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then return
+
+    set folderName to name of aFolder
+    if includeRecentlyDeleted is not "true" and folderName is "Recently Deleted" then return
+
+    set safeFolderDir to my safeName(folderName)
+    if parentRel is "" then
+        set folderRel to safeFolderDir
+        set folderDisplayPath to folderName
+    else
+        set folderRel to parentRel & "/" & safeFolderDir
+        set folderDisplayPath to parentDisplayPath & "/" & folderName
+    end if
+
+    set noteDirRel to accountRel & "/" & folderRel
+    set rawDir to rawRoot & "/" & noteDirRel
+    set textDir to textRoot & "/" & noteDirRel
+    do shell script "mkdir -p " & quoted form of rawDir
+    do shell script "mkdir -p " & quoted form of textDir
+
+    set shouldExportFolderNotes to folderFilter is "" or folderName is folderFilter or folderDisplayPath is folderFilter
+    if shouldExportFolderNotes then
+        set folderIndex to 0
+        set folderNotes to {}
+        try
+            tell application "Notes" to set folderNotes to notes of aFolder
+        end try
+        repeat with aNote in folderNotes
+            if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then exit repeat
+            set folderIndex to folderIndex + 1
+            set my exportedCount to (my exportedCount) + 1
+
+            tell application "Notes"
+                set noteTitle to name of aNote
+                set noteBody to body of aNote
+                set noteText to plaintext of aNote
+                set createdValue to (creation date of aNote) as string
+                set modifiedValue to (modification date of aNote) as string
+            end tell
+            set safeTitle to my safeName(noteTitle)
+            set baseName to safeTitle & "-" & (folderIndex as string)
+
+            set rawRel to "raw_html/" & noteDirRel & "/" & baseName & ".html"
+            set textRel to "text/" & noteDirRel & "/" & baseName & ".txt"
+            set rawPath to rootDir & "/" & rawRel
+            set textPath to rootDir & "/" & textRel
+
+            my writeFile(rawPath, noteBody)
+            my writeFile(textPath, noteText)
+
+            set manifestLine to my tsv(rawRel) & tab & my tsv(textRel) & tab & my tsv(noteTitle) & tab & my tsv(accountName) & tab & my tsv(folderDisplayPath) & tab & my tsv(createdValue) & tab & my tsv(modifiedValue) & linefeed
+            my appendFile(manifestPath, manifestLine)
+        end repeat
+    end if
+
+    set childFolders to {}
+    try
+        tell application "Notes" to set childFolders to folders of aFolder
+    end try
+    repeat with childFolder in childFolders
+        if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then exit repeat
+        my exportFolder(childFolder, accountName, accountRel, folderRel, folderDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes)
+    end repeat
+end exportFolder
 
 on writeFile(filePath, content)
     set fileRef to missing value
@@ -177,28 +218,33 @@ def data_url_to_file(src: str, attachments_dir: Path, stem: str, index: int) -> 
     return f"attachments/{filename}"
 
 
-def html_to_markdown(html: str, md_path: Path) -> str:
-    try:
-        from bs4 import BeautifulSoup
-        from markdownify import markdownify as markdownify_html
-    except ImportError:
-        return re.sub(r"\n{3,}", "\n\n", re.sub(r"<[^>]+>", "", html)).strip() + "\n"
-
-    soup = BeautifulSoup(html, "html.parser")
+def extract_image_links(html_text: str, md_path: Path) -> list[str]:
     attachments_dir = md_path.parent / "attachments"
-    image_index = 0
+    links = []
+    img_sources = re.findall(
+        r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"'][^>]*>",
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
 
-    for img in soup.find_all("img"):
-        src = img.get("src", "")
-        if src.startswith("data:"):
-            image_index += 1
-            replacement = data_url_to_file(src, attachments_dir, md_path.stem, image_index)
-            if replacement:
-                img["src"] = replacement
+    for index, src in enumerate(img_sources, start=1):
+        if not src.startswith("data:"):
+            continue
+        replacement = data_url_to_file(src, attachments_dir, md_path.stem, index)
+        if replacement:
+            links.append(f"![Attachment {index}]({replacement})")
 
-    markdown = markdownify_html(str(soup), heading_style="ATX", bullets="-")
-    markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
-    return markdown + "\n"
+    return links
+
+
+def text_to_markdown(text: str, html_text: str, md_path: Path) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    image_links = extract_image_links(html_text, md_path)
+    sections = [text] if text else []
+    if image_links:
+        sections.extend(["## Attachments", "\n".join(image_links)])
+    return "\n\n".join(sections).strip() + "\n"
 
 
 def yaml_string(value: str) -> str:
@@ -214,6 +260,7 @@ def convert_manifest(output_dir: Path) -> int:
         reader = csv.DictReader(handle, delimiter="\t")
         for row in reader:
             raw_path = output_dir / row["raw_rel"]
+            text_path = output_dir / row["text_rel"]
             raw_rel = Path(row["raw_rel"])
             note_dir = raw_rel.parent.relative_to("raw_html")
             md_dir = md_root / note_dir
@@ -221,8 +268,9 @@ def convert_manifest(output_dir: Path) -> int:
 
             md_name = raw_rel.with_suffix(".md").name
             md_path = md_dir / md_name
-            html = raw_path.read_text(encoding="utf-8", errors="replace")
-            body = html_to_markdown(html, md_path)
+            html_text = raw_path.read_text(encoding="utf-8", errors="replace")
+            plain_text = text_path.read_text(encoding="utf-8", errors="replace")
+            body = text_to_markdown(plain_text, html_text, md_path)
 
             frontmatter = [
                 "---",
@@ -238,6 +286,70 @@ def convert_manifest(output_dir: Path) -> int:
             count += 1
 
     return count
+
+
+def display_name(path: Path) -> str:
+    return path.name or str(path)
+
+
+def write_index(directory: Path, root: Path) -> None:
+    dirs = sorted([p for p in directory.iterdir() if p.is_dir()], key=lambda p: p.name.lower())
+    files = sorted(
+        [p for p in directory.iterdir() if p.is_file() and p.name != "index.html"],
+        key=lambda p: p.name.lower(),
+    )
+    rel = directory.relative_to(root) if directory != root else Path(".")
+    title = "Apple Notes Backup" if rel == Path(".") else str(rel)
+    parent_link = ""
+    if directory != root:
+        parent_link = '<p class="parent"><a href="../index.html">../</a></p>'
+
+    rows = []
+    for child in dirs:
+        rows.append(
+            f'<li class="dir"><a href="{quote(child.name)}/index.html">{html.escape(child.name)}/</a></li>'
+        )
+    for child in files:
+        rows.append(f'<li class="file"><a href="{quote(child.name)}">{html.escape(child.name)}</a></li>')
+
+    body = "\n".join(rows) if rows else '<li class="empty">No files in this folder</li>'
+    content = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; line-height: 1.5; }}
+    h1 {{ font-size: 1.4rem; }}
+    ul {{ list-style: none; padding-left: 0; }}
+    li {{ margin: 0.35rem 0; }}
+    a {{ color: #0b57d0; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .dir::before {{ content: "[dir] "; color: #666; }}
+    .file::before {{ content: "[file] "; color: #666; }}
+    .parent {{ margin-bottom: 1.5rem; }}
+    .empty {{ color: #666; }}
+  </style>
+</head>
+<body>
+  <h1>{html.escape(title)}</h1>
+  {parent_link}
+  <ul>
+    {body}
+  </ul>
+</body>
+</html>
+"""
+    (directory / "index.html").write_text(content, encoding="utf-8")
+
+
+def generate_indexes(output_dir: Path) -> int:
+    directories = [output_dir]
+    directories.extend(sorted([p for p in output_dir.rglob("*") if p.is_dir()], key=lambda p: str(p)))
+    for directory in directories:
+        write_index(directory, output_dir)
+    return len(directories)
 
 
 def run_export(
@@ -327,9 +439,11 @@ def main() -> int:
 
     exported = run_export(output_dir, args.account, args.folder, args.limit, args.include_recently_deleted)
     converted = convert_manifest(output_dir)
+    indexed = generate_indexes(output_dir)
 
     print(f"Exported {exported} notes.")
     print(f"Created {converted} Markdown files in: {output_dir / 'markdown'}")
+    print(f"Created {indexed} index.html files for browsing the backup.")
     print(f"Raw HTML is kept in: {output_dir / 'raw_html'}")
     return 0
 
