@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "applenotesbackup"
+version = "0.1.0"
+description = "One-way Apple Notes backup to Markdown on macOS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "beautifulsoup4>=4.13,<5",
+  "markdownify>=1.1,<2",
+]
+
+[project.scripts]
+apple-notes-backup = "apple_notes_backup:main"
+
+[tool.setuptools]
+py-modules = ["apple_notes_backup"]

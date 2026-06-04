@@ -1,0 +1,11 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+
+# Local backup outputs, if you choose to write them inside the repo.
+AppleNotesMarkdownBackup-*/
+backups/
