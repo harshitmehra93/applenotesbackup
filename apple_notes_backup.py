@@ -33,6 +33,7 @@ on run argv
     set includeRecentlyDeleted to item 3 of argv
     set folderFilter to item 4 of argv
     set maxNotes to item 5 of argv as integer
+    set titleFilter to item 6 of argv
 
     set rawRoot to rootDir & "/raw_html"
     set textRoot to rootDir & "/text"
@@ -40,7 +41,7 @@ on run argv
 
     do shell script "mkdir -p " & quoted form of rawRoot
     do shell script "mkdir -p " & quoted form of textRoot
-    my writeFile(manifestPath, "raw_rel	text_rel	title	account	folder	created	modified" & linefeed)
+    my writeFile(manifestPath, "raw_rel	text_rel	attachment_rel	title	account	folder	created	modified" & linefeed)
 
     set my exportedCount to 0
 
@@ -52,7 +53,7 @@ on run argv
                 repeat with aFolder in folders of anAccount
                     set parentObject to container of aFolder
                     if class of parentObject is account then
-                        my exportFolder(aFolder, accountName, accountRel, "", "", rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes)
+                        my exportFolder(aFolder, accountName, accountRel, "", "", rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
                     end if
                 end repeat
             end if
@@ -62,7 +63,7 @@ on run argv
     return my exportedCount as string
 end run
 
-on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes)
+on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
     if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then return
 
     set folderName to name of aFolder
@@ -92,29 +93,34 @@ on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, 
         end try
         repeat with aNote in folderNotes
             if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then exit repeat
-            set folderIndex to folderIndex + 1
-            set my exportedCount to (my exportedCount) + 1
 
-            tell application "Notes"
-                set noteTitle to name of aNote
-                set noteBody to body of aNote
-                set noteText to plaintext of aNote
-                set createdValue to (creation date of aNote) as string
-                set modifiedValue to (modification date of aNote) as string
-            end tell
-            set safeTitle to my safeName(noteTitle)
-            set baseName to safeTitle & "-" & (folderIndex as string)
+            tell application "Notes" to set noteTitle to name of aNote
+            if titleFilter is "" or noteTitle is titleFilter then
+                tell application "Notes"
+                    set noteBody to body of aNote
+                    set noteText to plaintext of aNote
+                    set createdValue to (creation date of aNote) as string
+                    set modifiedValue to (modification date of aNote) as string
+                end tell
+                set folderIndex to folderIndex + 1
+                set my exportedCount to (my exportedCount) + 1
+                set safeTitle to my safeName(noteTitle)
+                set baseName to safeTitle & "-" & (folderIndex as string)
 
-            set rawRel to "raw_html/" & noteDirRel & "/" & baseName & ".html"
-            set textRel to "text/" & noteDirRel & "/" & baseName & ".txt"
-            set rawPath to rootDir & "/" & rawRel
-            set textPath to rootDir & "/" & textRel
+                set rawRel to "raw_html/" & noteDirRel & "/" & baseName & ".html"
+                set textRel to "text/" & noteDirRel & "/" & baseName & ".txt"
+                set attachmentRel to "attachments/" & baseName
+                set rawPath to rootDir & "/" & rawRel
+                set textPath to rootDir & "/" & textRel
+                set markdownAttachmentDir to rootDir & "/markdown/" & noteDirRel & "/" & attachmentRel
 
-            my writeFile(rawPath, noteBody)
-            my writeFile(textPath, noteText)
+                my writeFile(rawPath, noteBody)
+                my writeFile(textPath, noteText)
+                my copyNoteAttachments(aNote, markdownAttachmentDir)
 
-            set manifestLine to my tsv(rawRel) & tab & my tsv(textRel) & tab & my tsv(noteTitle) & tab & my tsv(accountName) & tab & my tsv(folderDisplayPath) & tab & my tsv(createdValue) & tab & my tsv(modifiedValue) & linefeed
-            my appendFile(manifestPath, manifestLine)
+                set manifestLine to my tsv(rawRel) & tab & my tsv(textRel) & tab & my tsv(attachmentRel) & tab & my tsv(noteTitle) & tab & my tsv(accountName) & tab & my tsv(folderDisplayPath) & tab & my tsv(createdValue) & tab & my tsv(modifiedValue) & linefeed
+                my appendFile(manifestPath, manifestLine)
+            end if
         end repeat
     end if
 
@@ -124,9 +130,48 @@ on exportFolder(aFolder, accountName, accountRel, parentRel, parentDisplayPath, 
     end try
     repeat with childFolder in childFolders
         if maxNotes is not 0 and (my exportedCount) ≥ maxNotes then exit repeat
-        my exportFolder(childFolder, accountName, accountRel, folderRel, folderDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes)
+        my exportFolder(childFolder, accountName, accountRel, folderRel, folderDisplayPath, rootDir, rawRoot, textRoot, manifestPath, includeRecentlyDeleted, folderFilter, maxNotes, titleFilter)
     end repeat
 end exportFolder
+
+on copyNoteAttachments(aNote, attachmentDir)
+    set attachmentIndex to 0
+    set noteAttachments to {}
+    try
+        tell application "Notes" to set noteAttachments to attachments of aNote
+    end try
+    if (count of noteAttachments) is 0 then return
+    do shell script "mkdir -p " & quoted form of attachmentDir
+
+    repeat with anAttachment in noteAttachments
+        set attachmentIndex to attachmentIndex + 1
+        set attachmentName to "attachment-" & (attachmentIndex as string)
+        try
+            tell application "Notes"
+                set attachmentProperties to properties of anAttachment
+                set attachmentName to name of attachmentProperties
+                set attachmentContents to contents of attachmentProperties
+            end tell
+
+            if attachmentName is missing value or attachmentName is "" then
+                set attachmentName to "attachment-" & (attachmentIndex as string)
+            end if
+
+            set safeAttachmentName to my uniqueAttachmentName(attachmentDir, attachmentName, attachmentIndex)
+            set sourcePath to POSIX path of attachmentContents
+            set destinationPath to attachmentDir & "/" & safeAttachmentName
+            do shell script "cp -p " & quoted form of sourcePath & " " & quoted form of destinationPath
+        on error errMsg
+            do shell script "mkdir -p " & quoted form of attachmentDir
+            my appendFile(attachmentDir & "/unavailable-attachments.txt", (attachmentIndex as string) & " - " & attachmentName & " - " & errMsg & linefeed)
+        end try
+    end repeat
+end copyNoteAttachments
+
+on uniqueAttachmentName(attachmentDir, attachmentName, attachmentIndex)
+    set safeAttachmentName to my safeFileName(attachmentName)
+    return (attachmentIndex as string) & "-" & safeAttachmentName
+end uniqueAttachmentName
 
 on writeFile(filePath, content)
     set fileRef to missing value
@@ -170,6 +215,12 @@ on safeName(inputText)
     if length of cleaned > 120 then set cleaned to text 1 through 120 of cleaned
     return cleaned
 end safeName
+
+on safeFileName(inputText)
+    set cleaned to my safeName(inputText)
+    if cleaned is "" or cleaned is "-" then set cleaned to "attachment"
+    return cleaned
+end safeFileName
 
 on tsv(inputText)
     set cleaned to inputText as string
@@ -247,6 +298,20 @@ def text_to_markdown(text: str, html_text: str, md_path: Path) -> str:
     return "\n\n".join(sections).strip() + "\n"
 
 
+def exported_attachment_links(md_path: Path, attachment_rel: str) -> list[str]:
+    attachment_dir = md_path.parent / attachment_rel
+    if not attachment_dir.exists():
+        return []
+
+    links = []
+    for attachment in sorted(attachment_dir.iterdir(), key=lambda p: p.name.lower()):
+        if not attachment.is_file():
+            continue
+        href = quote(f"{attachment_rel}/{attachment.name}")
+        links.append(f"- [{attachment.name}]({href})")
+    return links
+
+
 def yaml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -271,6 +336,9 @@ def convert_manifest(output_dir: Path) -> int:
             html_text = raw_path.read_text(encoding="utf-8", errors="replace")
             plain_text = text_path.read_text(encoding="utf-8", errors="replace")
             body = text_to_markdown(plain_text, html_text, md_path)
+            file_attachment_links = exported_attachment_links(md_path, row["attachment_rel"])
+            if file_attachment_links:
+                body = body.rstrip() + "\n\n## Files\n\n" + "\n".join(file_attachment_links) + "\n"
 
             frontmatter = [
                 "---",
@@ -356,6 +424,7 @@ def run_export(
     output_dir: Path,
     account: str,
     folder: str,
+    title: str,
     limit: int,
     include_recently_deleted: bool,
 ) -> int:
@@ -374,6 +443,7 @@ def run_export(
                 "true" if include_recently_deleted else "false",
                 folder,
                 str(limit),
+                title,
             ],
             text=True,
             capture_output=True,
@@ -416,6 +486,12 @@ def parse_args() -> argparse.Namespace:
         help='Only export this Notes folder name, for example "Journal". Defaults to all folders.',
     )
     parser.add_argument(
+        "-t",
+        "--title",
+        default="",
+        help="Only export notes with this exact title. Defaults to all notes.",
+    )
+    parser.add_argument(
         "-n",
         "--limit",
         type=int,
@@ -437,7 +513,7 @@ def main() -> int:
     print(f"Exporting Apple Notes to: {output_dir}")
     print("macOS may ask for permission to let Terminal control Notes.")
 
-    exported = run_export(output_dir, args.account, args.folder, args.limit, args.include_recently_deleted)
+    exported = run_export(output_dir, args.account, args.folder, args.title, args.limit, args.include_recently_deleted)
     converted = convert_manifest(output_dir)
     indexed = generate_indexes(output_dir)
 
